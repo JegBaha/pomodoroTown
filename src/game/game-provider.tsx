@@ -24,7 +24,7 @@ type GameContextValue = {
 const GameContext = createContext<GameContextValue | null>(null);
 
 export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const adapterRef = useRef<ServerAdapter>();
+  const adapterRef = useRef<ServerAdapter>(undefined);
   const setAuthoritativeState = useGameStore((s) => s.setAuthoritativeState);
   const enqueue = useGameStore((s) => s.enqueue);
   const markAcked = useGameStore((s) => s.markAcked);

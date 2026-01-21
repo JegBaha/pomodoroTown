@@ -1,12 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, View, Pressable, Animated, Easing, Platform, Alert } from 'react-native';
+import { ScrollView, StyleSheet, View, Pressable, Animated, Easing, Alert, useWindowDimensions, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { ThemedText } from '@/components/themed-text';
 import { ForestBackground } from '@/components/forest-background';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { IsometricScene } from '@/src/game/map/IsometricScene';
-import { TopDownMap } from '@/src/game/map/TopDownMap';
+import { PixelTownMap } from '@/src/game/map/PixelTownMap';
 import { findNextOpenSlot, isAreaFree } from '@/src/game/map/occupancy';
 import { useGame } from '@/src/game/game-provider';
 import { getFootprint } from '@/src/game/util/footprint';
@@ -107,11 +106,14 @@ const gradientFromPalette = (p: Palette) => [p.accent, p.accent2, p.accentWarm] 
 
 export default function TownScreen() {
   const colorScheme = useColorScheme() ?? 'dark';
+  const { width } = useWindowDimensions();
+  const isMobile = width < 768;
   const palette = useMemo<Palette>(() => (colorScheme === 'dark' ? darkPalette : lightPalette), [colorScheme]);
   const styles = useMemo(() => createStyles(palette), [palette]);
   const accentGradient = useMemo(() => gradientFromPalette(palette), [palette]);
   const { town, enqueue, syncNow, syncing, commands } = useGame();
   const [moveTargetId, setMoveTargetId] = useState<string | null>(null);
+  const [expandedSection, setExpandedSection] = useState<string | null>(null);
   const activeSession = town.timers.session;
   const heroPulse = useRef(new Animated.Value(0)).current;
   const shimmer = useRef(new Animated.Value(0)).current;
@@ -202,17 +204,21 @@ export default function TownScreen() {
     onPress,
     disabled,
     variant = 'solid',
+    size = 'md',
   }: {
     label: string;
     onPress: () => void;
     disabled?: boolean;
     variant?: 'solid' | 'ghost';
+    size?: 'sm' | 'md' | 'lg';
   }) => (
     <Pressable
       onPress={onPress}
       disabled={disabled}
       style={({ pressed }) => [
         styles.actionButton,
+        size === 'sm' && styles.actionButtonSmall,
+        size === 'lg' && styles.actionButtonLarge,
         variant === 'ghost' && styles.actionGhost,
         { opacity: disabled ? 0.4 : pressed ? 0.92 : 1 },
       ]}>
@@ -224,7 +230,10 @@ export default function TownScreen() {
           style={StyleSheet.absoluteFillObject}
         />
       ) : null}
-      <ThemedText style={variant === 'ghost' ? styles.actionGhostText : styles.actionText}>{label}</ThemedText>
+      <ThemedText style={[
+        variant === 'ghost' ? styles.actionGhostText : styles.actionText,
+        size === 'sm' && styles.actionTextSmall,
+      ]}>{label}</ThemedText>
     </Pressable>
   );
 
@@ -232,10 +241,16 @@ export default function TownScreen() {
     title,
     subtitle,
     children,
+    collapsible = false,
+    isExpanded = true,
+    onToggle,
   }: {
     title: string;
     subtitle?: string;
     children: React.ReactNode;
+    collapsible?: boolean;
+    isExpanded?: boolean;
+    onToggle?: () => void;
   }) => (
     <View style={styles.panel}>
       <LinearGradient
@@ -245,11 +260,24 @@ export default function TownScreen() {
         style={StyleSheet.absoluteFillObject}
       />
       <View style={styles.panelBorder} />
-      <View style={styles.panelContent}>
-        <ThemedText style={styles.sectionLabel}>{title}</ThemedText>
-        {subtitle ? <ThemedText style={styles.subtitle}>{subtitle}</ThemedText> : null}
-        {children}
-      </View>
+      {collapsible ? (
+        <>
+          <Pressable onPress={onToggle} style={styles.panelHeaderCollapsible}>
+            <View style={styles.panelHeaderContent}>
+              <ThemedText style={styles.sectionLabel}>{title}</ThemedText>
+              {subtitle ? <ThemedText style={styles.subtitle}>{subtitle}</ThemedText> : null}
+            </View>
+            <ThemedText style={styles.collapseIcon}>{isExpanded ? '▼' : '▶'}</ThemedText>
+          </Pressable>
+          {isExpanded ? <View style={styles.panelContentCollapsed}>{children}</View> : null}
+        </>
+      ) : (
+        <View style={styles.panelContent}>
+          <ThemedText style={styles.sectionLabel}>{title}</ThemedText>
+          {subtitle ? <ThemedText style={styles.subtitle}>{subtitle}</ThemedText> : null}
+          {children}
+        </View>
+      )}
     </View>
   );
 
@@ -260,215 +288,286 @@ export default function TownScreen() {
     </View>
   );
 
+  const CostRow = ({ label, cost }: { label: string; cost: { gold?: number; wood?: number; stone?: number; food?: number } }) => (
+    <View style={styles.costRow}>
+      <ThemedText style={styles.costRowLabel}>{label}</ThemedText>
+      <View style={styles.costRowValues}>
+        {cost.gold ? <ThemedText style={styles.costValue}>💰 {cost.gold}</ThemedText> : null}
+        {cost.wood ? <ThemedText style={styles.costValue}>🪵 {cost.wood}</ThemedText> : null}
+        {cost.stone ? <ThemedText style={styles.costValue}>🪨 {cost.stone}</ThemedText> : null}
+      </View>
+    </View>
+  );
+
+  const getBuildingEmoji = (type: BuildingType) => {
+    const emojis: Record<BuildingType, string> = {
+      town_hall: '🏰',
+      farm: '🚜',
+      sawmill: '🪵',
+      mine: '⛏️',
+      market: '🛒',
+      decor: '🌳',
+    };
+    return emojis[type] || '🏗️';
+  };
+
   return (
     <ForestBackground>
-      <ScrollView contentContainerStyle={styles.container}>
-        <View style={styles.page}>
-        <View style={styles.hero}>
-          <LinearGradient
-            colors={palette.heroGradient}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={StyleSheet.absoluteFillObject}
-          />
-          <View pointerEvents="none" style={styles.floatingGlows}>
-            <Animated.View
-              style={[
-                styles.floatingOrb,
-                {
-                  top: 10,
-                  left: -30,
-                  transform: [
-                    {
-                      translateY: float.interpolate({ inputRange: [0, 1], outputRange: [0, -10] }),
-                    },
-                  ],
-                },
-              ]}
-            />
-            <Animated.View
-              style={[
-                styles.floatingOrb,
-                {
-                  bottom: -20,
-                  right: -10,
-                  backgroundColor: palette.orbWarm,
-                  width: 180,
-                  height: 180,
-                  transform: [
-                    {
-                      translateY: float.interpolate({ inputRange: [0, 1], outputRange: [0, 14] }),
-                    },
-                  ],
-                },
-              ]}
-            />
-          </View>
-          <Animated.View
-            style={[
-              styles.heroHalo,
-              {
-                opacity: heroPulse.interpolate({ inputRange: [0, 1], outputRange: [0.08, 0.16] }),
-                transform: [
-                  {
-                    scale: heroPulse.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1.05] }),
-                  },
-                  { rotate: heroPulse.interpolate({ inputRange: [0, 1], outputRange: ['-8deg', '-3deg'] }) },
-                ],
-              },
-            ]}
-          />
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.heroSweep,
-              {
-                opacity: shimmer.interpolate({ inputRange: [0, 1], outputRange: [0.16, 0.32] }),
-                transform: [
-                  {
-                    scale: shimmer.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [0.96, 1.02],
-                    }),
-                  },
-                  { rotate: '-8deg' },
-                ],
-              },
-            ]}
-          />
-          <View style={styles.heroHeader}>
-            <View style={styles.heroBadge}>
-              <ThemedText style={styles.heroBadgeText}>Kasaba</ThemedText>
-            </View>
-            <Pressable onPress={syncNow} style={styles.syncChip}>
-              <ThemedText style={styles.syncChipText}>
-                {syncing ? 'Senkronize ediliyor' : 'Senkr. et'}
-              </ThemedText>
-            </Pressable>
-          </View>
-          <ThemedText style={styles.heroTitle}>Orman Kasabasi</ThemedText>
-          <ThemedText style={styles.heroSubtitle}>
-            Odak puanlarini kasabana aktar, premium bir yonetim akisi ile buyut.
-          </ThemedText>
-          <View style={styles.heroStats}>
-            <StatPill label="Town Hall" value={`Lv ${townHallLevel}`} />
-            <StatPill label="Aktif oturum" value={activeSession ? 'Acik' : 'Yok'} />
-          </View>
-        </View>
-
-        <Panel title="Kasaba Haritasi" subtitle="Cam gibi katmanlarla capcanli" palette={palette}>
-          <View style={styles.mapFrame}>
+      <ScrollView contentContainerStyle={styles.container} scrollIndicatorInsets={{ right: 1 }}>
+        <View style={[styles.page, isMobile && styles.pageMobile]}>
+          <View style={styles.hero}>
             <LinearGradient
-              colors={palette.panelGradient}
+              colors={palette.heroGradient}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={StyleSheet.absoluteFillObject}
             />
+            <View pointerEvents="none" style={styles.floatingGlows}>
+              <Animated.View
+                style={[
+                  styles.floatingOrb,
+                  {
+                    top: 10,
+                    left: -30,
+                    transform: [
+                      {
+                        translateY: float.interpolate({ inputRange: [0, 1], outputRange: [0, -10] }),
+                      },
+                    ],
+                  },
+                ]}
+              />
+              <Animated.View
+                style={[
+                  styles.floatingOrb,
+                  {
+                    bottom: -20,
+                    right: -10,
+                    backgroundColor: palette.orbWarm,
+                    width: 180,
+                    height: 180,
+                    transform: [
+                      {
+                        translateY: float.interpolate({ inputRange: [0, 1], outputRange: [0, 14] }),
+                      },
+                    ],
+                  },
+                ]}
+              />
+            </View>
+            <Animated.View
+              style={[
+                styles.heroHalo,
+                {
+                  opacity: heroPulse.interpolate({ inputRange: [0, 1], outputRange: [0.08, 0.16] }),
+                  transform: [
+                    {
+                      scale: heroPulse.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1.05] }),
+                    },
+                    { rotate: heroPulse.interpolate({ inputRange: [0, 1], outputRange: ['-8deg', '-3deg'] }) },
+                  ],
+                },
+              ]}
+            />
             <Animated.View
               pointerEvents="none"
               style={[
-                styles.mapGlow,
+                styles.heroSweep,
                 {
+                  opacity: shimmer.interpolate({ inputRange: [0, 1], outputRange: [0.16, 0.32] }),
                   transform: [
                     {
                       scale: shimmer.interpolate({
                         inputRange: [0, 1],
-                        outputRange: [0.95, 1.03],
+                        outputRange: [0.96, 1.02],
                       }),
                     },
+                    { rotate: '-8deg' },
                   ],
-                  opacity: shimmer.interpolate({ inputRange: [0, 1], outputRange: [0.12, 0.26] }),
                 },
               ]}
             />
-            <ScrollView horizontal bounces>
-              {Platform.OS === 'ios' || Platform.OS === 'android' ? (
-                <TopDownMap
+            <View style={[styles.heroHeader, isMobile && styles.heroHeaderMobile]}>
+              <View style={styles.heroBadge}>
+                <ThemedText style={styles.heroBadgeText}>🏡 Kasaba</ThemedText>
+              </View>
+              <Pressable onPress={syncNow} style={[styles.syncChip, syncing && styles.syncChipActive]}>
+                {syncing ? (
+                  <ActivityIndicator size="small" color={palette.accent} />
+                ) : (
+                  <ThemedText style={styles.syncChipText}>✓ Senkr.</ThemedText>
+                )}
+              </Pressable>
+            </View>
+            <ThemedText style={[styles.heroTitle, isMobile && styles.heroTitleMobile]}>
+              Orman Kasabasi
+            </ThemedText>
+            <ThemedText style={[styles.heroSubtitle, isMobile && styles.heroSubtitleMobile]}>
+              Pomodoro oturumlarını tamamla ve kasabanı geliştir
+            </ThemedText>
+            <View style={[styles.heroStats, isMobile && styles.heroStatsMobile]}>
+              <StatPill label="Town Hall" value={`Lv ${townHallLevel}`} />
+              <StatPill label="Aktif" value={activeSession ? '✓' : '○'} />
+              <StatPill label="Bina" value={town.buildings.length} />
+            </View>
+          </View>
+
+          {/* Harita Bölümü */}
+          <Panel 
+            title="📍 Kasaba Haritası" 
+            subtitle={isMobile ? "Kaydırarak taşı" : "Cam gibi katmanlarla çarpıcı"}
+            collapsible={isMobile}
+            isExpanded={expandedSection === 'map' || !isMobile}
+            onToggle={() => setExpandedSection(expandedSection === 'map' ? null : 'map')}
+          >
+            <View style={[styles.mapFrame, isMobile && styles.mapFrameMobile]}>
+              <LinearGradient
+                colors={palette.panelGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFillObject}
+              />
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  styles.mapGlow,
+                  {
+                    transform: [
+                      {
+                        scale: shimmer.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0.95, 1.03],
+                        }),
+                      },
+                    ],
+                    opacity: shimmer.interpolate({ inputRange: [0, 1], outputRange: [0.12, 0.26] }),
+                  },
+                ]}
+              />
+              <ScrollView
+                horizontal
+                scrollIndicatorInsets={{ right: 1 }}
+                scrollEnabled={!moveTargetId}
+                nestedScrollEnabled
+              >
+                <PixelTownMap
                   state={town}
-                  tileSize={62}
+                  tileSize={isMobile ? 44 : 52}
                   onTilePress={handleTilePress}
                   onBuildingPress={handleSelectForMove}
                   selectedBuildingId={moveTargetId ?? undefined}
                 />
-              ) : (
-                <IsometricScene state={town} height={420} />
-              )}
-            </ScrollView>
-          </View>
-          {moveTargetId ? (
-            <View style={styles.moveBanner}>
-              <ThemedText style={styles.moveBannerText}>Tasima modu: haritada konum sec</ThemedText>
+              </ScrollView>
             </View>
-          ) : null}
-          <View style={styles.resources}>
-            <StatPill label="Gold" value={town.resources.gold} />
-            <StatPill label="Wood" value={town.resources.wood} />
-            <StatPill label="Stone" value={town.resources.stone} />
-            <StatPill label="Food" value={town.resources.food} />
-          </View>
-        </Panel>
+            {moveTargetId ? (
+              <View style={[styles.moveBanner, styles.bannerActive]}>
+                <ThemedText style={styles.moveBannerText}>📌 Taşıma modu: haritada konum seç</ThemedText>
+              </View>
+            ) : null}
+            <View style={[styles.resources, isMobile && styles.resourcesMobile]}>
+              <StatPill label="💰 Gold" value={town.resources.gold} />
+              <StatPill label="🪵 Wood" value={town.resources.wood} />
+              <StatPill label="🪨 Stone" value={town.resources.stone} />
+              <StatPill label="🍞 Food" value={town.resources.food} />
+            </View>
+          </Panel>
 
-        <Panel title="Binalar" subtitle="Kaynaklarini parlak butonlarla yatir" palette={palette}>
-          <View style={styles.actions}>
-            <ActionButton
-              label={`Ciftlik (G${cost.farm.gold ?? 0}/W${cost.farm.wood ?? 0}/S${cost.farm.stone ?? 0})`}
-              onPress={() => handlePlace('farm')}
-              disabled={!canAfford(cost.farm)}
-              palette={palette}
-            />
-            <ActionButton
-              label={`Odun atolyesi (G${cost.sawmill.gold ?? 0}/W${cost.sawmill.wood ?? 0}/S${cost.sawmill.stone ?? 0})`}
-              onPress={() => handlePlace('sawmill')}
-              disabled={!canAfford(cost.sawmill)}
-              palette={palette}
-            />
-            <ActionButton
-              label={`Maden (G${cost.mine.gold ?? 0}/W${cost.mine.wood ?? 0}/S${cost.mine.stone ?? 0})`}
-              onPress={() => handlePlace('mine')}
-              disabled={!canAfford(cost.mine)}
-              palette={palette}
-            />
-            <ActionButton
-              label={`Pazar (G${cost.market.gold ?? 0}/W${cost.market.wood ?? 0}/S${cost.market.stone ?? 0})`}
-              onPress={() => handlePlace('market')}
-              disabled={!canAfford(cost.market)}
-              palette={palette}
-            />
-            <ActionButton
-              label={`Town Hall yukselt (Lv${townHallLevel + 1})`}
-              onPress={handleUpgradeTownHall}
-              disabled={!hasUpgradeResources}
-              palette={palette}
-            />
-            <ActionButton label={syncing ? 'Sync...' : 'Sync'} onPress={syncNow} variant="ghost" palette={palette} />
-          </View>
-          <View style={{ gap: 8, marginTop: 8 }}>
-            {town.buildings
-              .filter((b) => b.id !== 'town-hall')
-              .map((b) => (
-                <View key={b.id} style={styles.buildingRow}>
-                  <ThemedText style={styles.activityChipTitle}>
-                    {b.type} · Lv {b.level} · ({b.x},{b.y})
-                  </ThemedText>
-                  <View style={{ flexDirection: 'row', gap: 6 }}>
-                    <ActionButton
-                      label={moveTargetId === b.id ? 'Secildi' : 'Tasi'}
-                      onPress={() => handleSelectForMove(b.id)}
-                      variant={moveTargetId === b.id ? 'solid' : 'ghost'}
-                      palette={palette}
-                    />
-                    <ActionButton
-                      label="Sil"
-                      onPress={() => handleDeleteBuilding(b.id)}
-                      variant="ghost"
-                      palette={palette}
-                    />
-                  </View>
+          {/* Binalar Bölümü */}
+          <Panel 
+            title="🏗️ Binalar" 
+            subtitle={isMobile ? "Binalarını yönet" : "Kaynaklarını parlak butonlarla yatır"}
+            collapsible={isMobile}
+            isExpanded={expandedSection === 'buildings' || !isMobile}
+            onToggle={() => setExpandedSection(expandedSection === 'buildings' ? null : 'buildings')}
+          >
+            <View style={[styles.actions, isMobile && styles.actionsMobile]}>
+              <ActionButton
+                label={isMobile ? "🚜" : `Çiftlik`}
+                onPress={() => handlePlace('farm')}
+                disabled={!canAfford(cost.farm)}
+                size={isMobile ? 'sm' : 'md'}
+              />
+              <ActionButton
+                label={isMobile ? "🪵" : `Odun Fabrikası`}
+                onPress={() => handlePlace('sawmill')}
+                disabled={!canAfford(cost.sawmill)}
+                size={isMobile ? 'sm' : 'md'}
+              />
+              <ActionButton
+                label={isMobile ? "⛏️" : `Maden`}
+                onPress={() => handlePlace('mine')}
+                disabled={!canAfford(cost.mine)}
+                size={isMobile ? 'sm' : 'md'}
+              />
+              <ActionButton
+                label={isMobile ? "🛒" : `Pazar`}
+                onPress={() => handlePlace('market')}
+                disabled={!canAfford(cost.market)}
+                size={isMobile ? 'sm' : 'md'}
+              />
+              <ActionButton
+                label={isMobile ? `TH+` : `Town Hall Yükselt (Lv${townHallLevel + 1})`}
+                onPress={handleUpgradeTownHall}
+                disabled={!hasUpgradeResources}
+                size={isMobile ? 'sm' : 'md'}
+              />
+            </View>
+
+            {/* Detaylı Maliyet Bilgisi */}
+            {!isMobile && (
+              <View style={styles.costInfo}>
+                <ThemedText style={styles.costLabel}>Yapı Maliyetleri:</ThemedText>
+                <View style={styles.costGrid}>
+                  <CostRow label="Çiftlik" cost={cost.farm} />
+                  <CostRow label="Odun Fabrikası" cost={cost.sawmill} />
+                  <CostRow label="Maden" cost={cost.mine} />
+                  <CostRow label="Pazar" cost={cost.market} />
+                  <CostRow label="Town Hall +" cost={upgradeCost} />
                 </View>
-              ))}
-          </View>
-        </Panel>
+              </View>
+            )}
 
+            {/* Yerleştirilmiş Binalar */}
+            <View style={styles.buildingsList}>
+              {town.buildings.filter((b) => b.id !== 'town-hall').length > 0 ? (
+                <>
+                  <ThemedText style={[styles.sectionLabel, { fontSize: 14, marginBottom: 8 }]}>
+                    Yerleştirilen Binalar ({town.buildings.filter((b) => b.id !== 'town-hall').length})
+                  </ThemedText>
+                  {town.buildings
+                    .filter((b) => b.id !== 'town-hall')
+                    .map((b) => (
+                      <View key={b.id} style={styles.buildingRow}>
+                        <View style={styles.buildingInfo}>
+                          <ThemedText style={styles.buildingName}>
+                            {getBuildingEmoji(b.type)} {b.type} · Lv {b.level}
+                          </ThemedText>
+                          <ThemedText style={styles.buildingPos}>Konum: ({b.x}, {b.y})</ThemedText>
+                        </View>
+                        <View style={styles.buildingActions}>
+                          <ActionButton
+                            label={moveTargetId === b.id ? '✓' : '↔'}
+                            onPress={() => handleSelectForMove(b.id)}
+                            variant={moveTargetId === b.id ? 'solid' : 'ghost'}
+                            size="sm"
+                          />
+                          <ActionButton
+                            label="🗑"
+                            onPress={() => handleDeleteBuilding(b.id)}
+                            variant="ghost"
+                            size="sm"
+                          />
+                        </View>
+                      </View>
+                    ))}
+                </>
+              ) : (
+                <View style={styles.emptyState}>
+                  <ThemedText style={styles.emptyStateText}>📭 Henüz bina yok. Bir bina inşa et!</ThemedText>
+                </View>
+              )}
+            </View>
+          </Panel>
         </View>
       </ScrollView>
     </ForestBackground>
@@ -477,19 +576,22 @@ export default function TownScreen() {
 
 const createStyles = (p: Palette) =>
   StyleSheet.create({
-    container: { gap: 16, padding: 16, backgroundColor: 'transparent', alignItems: 'center' },
-    page: { width: '100%', maxWidth: 1080, gap: 16 },
+    container: { gap: 12, padding: 12, backgroundColor: 'transparent', alignItems: 'center', paddingBottom: 32 },
+    page: { width: '100%', maxWidth: 1080, gap: 12 },
+    pageMobile: { maxWidth: '100%' },
+    
+    // Hero Section
     hero: {
-      gap: 14,
-      padding: 24,
-      borderRadius: 22,
+      gap: 12,
+      padding: 16,
+      borderRadius: 18,
       overflow: 'hidden',
       borderWidth: 1,
       borderColor: p.borderSoft,
       shadowColor: p.shadow,
-      shadowOpacity: 0.16,
-      shadowRadius: 18,
-      shadowOffset: { width: 0, height: 10 },
+      shadowOpacity: 0.12,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 6 },
       backgroundColor: p.surface,
     },
     heroHalo: {
@@ -512,127 +614,213 @@ const createStyles = (p: Palette) =>
       left: -30,
       borderRadius: 200,
     },
-    heroHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' },
+    heroHeader: { 
+      flexDirection: 'row', 
+      alignItems: 'center', 
+      justifyContent: 'space-between', 
+      gap: 8, 
+      flexWrap: 'wrap' 
+    },
+    heroHeaderMobile: {
+      justifyContent: 'flex-start',
+    },
     heroBadge: {
       alignSelf: 'flex-start',
       backgroundColor: p.chipBg,
-      paddingHorizontal: 14,
+      paddingHorizontal: 12,
       paddingVertical: 6,
       borderRadius: 999,
       borderWidth: 1,
       borderColor: p.chipBorder,
     },
-    heroBadgeText: { color: p.textPrimary, fontWeight: '700', letterSpacing: 0.4 },
-    heroTitle: { color: p.textPrimary, fontSize: 28, fontWeight: '800', letterSpacing: -0.2 },
-    heroSubtitle: { color: p.textSecondary, fontSize: 15, lineHeight: 22 },
+    heroBadgeText: { color: p.textPrimary, fontWeight: '700', letterSpacing: 0.3, fontSize: 13 },
+    heroTitle: { color: p.textPrimary, fontSize: 24, fontWeight: '800', letterSpacing: -0.2 },
+    heroTitleMobile: { fontSize: 20 },
+    heroSubtitle: { color: p.textSecondary, fontSize: 14, lineHeight: 20 },
+    heroSubtitleMobile: { fontSize: 12, lineHeight: 18 },
     heroStats: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+    heroStatsMobile: { gap: 6 },
     syncChip: {
-      paddingHorizontal: 12,
+      paddingHorizontal: 10,
       paddingVertical: 8,
       borderRadius: 999,
       borderWidth: 1,
       borderColor: p.border,
       backgroundColor: p.surfaceAlt,
+      alignItems: 'center',
+      justifyContent: 'center',
+      minWidth: 45,
+      minHeight: 36,
     },
-    syncChipText: { color: p.textPrimary, fontWeight: '600', fontSize: 13 },
+    syncChipActive: {
+      backgroundColor: p.statusBg,
+      borderColor: p.accent,
+    },
+    syncChipText: { color: p.textPrimary, fontWeight: '600', fontSize: 12 },
+    
+    // Panel
     panel: {
       position: 'relative',
       overflow: 'hidden',
-      borderRadius: 18,
+      borderRadius: 16,
       borderWidth: 1,
       borderColor: p.borderSoft,
       shadowColor: p.shadow,
-      shadowOpacity: 0.12,
-      shadowRadius: 16,
-      shadowOffset: { width: 0, height: 10 },
+      shadowOpacity: 0.1,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 6 },
       backgroundColor: p.surfaceAlt,
     },
-  panelBorder: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: p.borderSoft,
-  },
-  panelContent: { gap: 10, padding: 16 },
-  sectionLabel: { color: p.textPrimary, fontWeight: '800', fontSize: 17, letterSpacing: 0.2 },
-  subtitle: { color: p.muted, fontSize: 14 },
-  resources: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
-  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  actionButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 12,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: p.border,
-    minWidth: 110,
-    alignItems: 'center',
-    backgroundColor: p.surfaceAlt,
-  },
-  actionGhost: { backgroundColor: 'transparent', borderWidth: 1.2, borderColor: p.border },
-  actionText: { color: p.textPrimary, fontWeight: '700', letterSpacing: 0.1 },
-  actionGhostText: { color: p.textPrimary, fontWeight: '600', letterSpacing: 0.1 },
-  statPill: {
-    backgroundColor: p.surfaceAlt,
-    borderColor: p.border,
-    borderWidth: 1.1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
-    minWidth: 110,
-    shadowColor: p.shadow,
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-  },
-  statLabel: { color: p.muted, fontSize: 12, marginBottom: 2 },
-  statValue: { color: p.textPrimary, fontWeight: '700', fontSize: 16 },
-  muted: { color: p.muted },
-  mapFrame: {
-    borderRadius: 18,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: p.borderSoft,
-    backgroundColor: p.surfaceAlt,
-    shadowColor: p.shadow,
-    shadowOpacity: 0.1,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 12 },
-  },
-  mapGlow: {
-    position: 'absolute',
-    width: '70%',
-    height: 140,
-    top: -20,
-    right: -20,
-    backgroundColor: p.glow,
-    opacity: 0.18,
-    transform: [{ rotate: '10deg' }],
-    borderRadius: 160,
-  },
-  floatingGlows: { ...StyleSheet.absoluteFillObject },
-  floatingOrb: {
-    position: 'absolute',
-    width: 140,
-    height: 140,
-    borderRadius: 999,
-    backgroundColor: p.orb,
-  },
-  buildingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: p.borderSoft,
-  },
-  moveBanner: {
-    marginTop: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: p.statusBg,
-    borderWidth: 1,
-    borderColor: p.chipBorder,
-  },
-  moveBannerText: { color: p.textPrimary, fontWeight: '700' },
-});
+    panelBorder: {
+      ...StyleSheet.absoluteFillObject,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: p.borderSoft,
+    },
+    panelContent: { gap: 10, padding: 14 },
+    panelHeaderCollapsible: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      padding: 14,
+      gap: 8,
+    },
+    panelHeaderContent: { flex: 1, gap: 4 },
+    panelContentCollapsed: { paddingHorizontal: 14, paddingBottom: 14, gap: 10 },
+    collapseIcon: { color: p.textSecondary, fontWeight: '700', fontSize: 14 },
+    
+    sectionLabel: { color: p.textPrimary, fontWeight: '800', fontSize: 16, letterSpacing: 0.2 },
+    subtitle: { color: p.muted, fontSize: 13 },
+    
+    // Resources & Stats
+    resources: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+    resourcesMobile: { gap: 5 },
+    statPill: {
+      backgroundColor: p.surfaceAlt,
+      borderColor: p.border,
+      borderWidth: 1,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      borderRadius: 10,
+      minWidth: 85,
+      shadowColor: p.shadow,
+      shadowOpacity: 0.06,
+      shadowRadius: 8,
+    },
+    statLabel: { color: p.muted, fontSize: 11, marginBottom: 2, fontWeight: '600' },
+    statValue: { color: p.textPrimary, fontWeight: '700', fontSize: 15 },
+    
+    // Map Section
+    mapFrame: {
+      borderRadius: 14,
+      overflow: 'hidden',
+      borderWidth: 1,
+      borderColor: p.borderSoft,
+      backgroundColor: p.surfaceAlt,
+      shadowColor: p.shadow,
+      shadowOpacity: 0.08,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 8 },
+      minHeight: 240,
+    },
+    mapFrameMobile: { minHeight: 200 },
+    mapGlow: {
+      position: 'absolute',
+      width: '70%',
+      height: 120,
+      top: -10,
+      right: -10,
+      backgroundColor: p.glow,
+      opacity: 0.16,
+      transform: [{ rotate: '10deg' }],
+      borderRadius: 160,
+    },
+    floatingGlows: { ...StyleSheet.absoluteFillObject },
+    floatingOrb: {
+      position: 'absolute',
+      width: 120,
+      height: 120,
+      borderRadius: 999,
+      backgroundColor: p.orb,
+    },
+    
+    // Actions
+    actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    actionsMobile: { gap: 6 },
+    actionButton: {
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderRadius: 10,
+      overflow: 'hidden',
+      borderWidth: 1,
+      borderColor: p.border,
+      minWidth: 100,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: p.surfaceAlt,
+    },
+    actionButtonSmall: {
+      minWidth: 50,
+      paddingHorizontal: 8,
+      paddingVertical: 8,
+    },
+    actionButtonLarge: {
+      minWidth: 140,
+      paddingVertical: 12,
+    },
+    actionGhost: { backgroundColor: 'transparent', borderWidth: 1.2, borderColor: p.border },
+    actionText: { color: p.textPrimary, fontWeight: '700', letterSpacing: 0.05, fontSize: 14 },
+    actionTextSmall: { fontSize: 12 },
+    actionGhostText: { color: p.textPrimary, fontWeight: '600', letterSpacing: 0.05, fontSize: 14 },
+    
+    // Cost Info
+    costInfo: { gap: 8, marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: p.borderSoft },
+    costLabel: { color: p.textPrimary, fontWeight: '700', fontSize: 13 },
+    costGrid: { gap: 6 },
+    costRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
+    costRowLabel: { color: p.textSecondary, fontSize: 12, flex: 1 },
+    costRowValues: { flexDirection: 'row', gap: 4 },
+    costValue: { color: p.accent, fontSize: 11, fontWeight: '600' },
+    
+    // Buildings List
+    buildingsList: { gap: 8, marginTop: 8 },
+    buildingRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: 8,
+      paddingHorizontal: 8,
+      borderRadius: 10,
+      backgroundColor: p.surfaceAlt,
+      borderWidth: 1,
+      borderColor: p.borderSoft,
+    },
+    buildingInfo: { flex: 1, gap: 4 },
+    buildingName: { color: p.textPrimary, fontWeight: '700', fontSize: 13 },
+    buildingPos: { color: p.muted, fontSize: 11 },
+    buildingActions: { flexDirection: 'row', gap: 4 },
+    
+    // Move Banner
+    moveBanner: {
+      marginTop: 8,
+      paddingVertical: 10,
+      paddingHorizontal: 12,
+      borderRadius: 10,
+      backgroundColor: p.statusBg,
+      borderWidth: 1,
+      borderColor: p.chipBorder,
+    },
+    bannerActive: {
+      backgroundColor: p.chipActiveBg,
+      borderColor: p.chipActiveBorder,
+    },
+    moveBannerText: { color: p.textPrimary, fontWeight: '700', fontSize: 13 },
+    
+    // Empty State
+    emptyState: {
+      paddingVertical: 24,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    emptyStateText: { color: p.muted, fontSize: 14 },
+  });

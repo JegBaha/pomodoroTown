@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -52,7 +52,7 @@ const buildingColors: Record<string, string> = {
   decor: '#cfd4de',
 };
 
-export const TopDownMap: React.FC<Props> = ({
+export const TopDownMap: React.FC<Props> = React.memo(({
   state,
   tileSize = 44,
   onTilePress,
@@ -60,68 +60,58 @@ export const TopDownMap: React.FC<Props> = ({
   onBuildingPress,
 }) => {
   const scheme = useColorScheme() ?? 'dark';
-  const palette = scheme === 'dark' ? palettes.dark : palettes.light;
+  const palette = useMemo(() => scheme === 'dark' ? palettes.dark : palettes.light, [scheme]);
   const { map, buildings } = state;
-  const widthPx = map.width * tileSize;
-  const heightPx = map.height * tileSize;
+  const widthPx = useMemo(() => map.width * tileSize, [map.width, tileSize]);
+  const heightPx = useMemo(() => map.height * tileSize, [map.height, tileSize]);
 
-  return (
-    <View
-      style={[
-        styles.wrapper,
-        {
-          width: widthPx,
-          height: heightPx,
-          borderColor: palette.border,
-          backgroundColor: palette.surface,
-          shadowColor: palette.shadow,
-        },
-      ]}>
-      <View style={styles.grid}>
-        {Array.from({ length: map.height }).map((_, row) => (
-          <View key={`row-${row}`} style={styles.row}>
-            {Array.from({ length: map.width }).map((_, col) => (
-              <Pressable
-                key={`tile-${row}-${col}`}
-                style={[
-                  styles.tile,
-                  {
-                    width: tileSize,
-                    height: tileSize,
-                    backgroundColor: palette.tile,
-                    borderColor: palette.grid,
-                  },
-                ]}
-                disabled={!onTilePress}
-                onPress={() => onTilePress?.({ x: col, y: row })}
-              />
-            ))}
-          </View>
+  // Memoize tile grid - avoid unnecessary re-renders
+  const tileGrid = useMemo(() => 
+    Array.from({ length: map.height }).map((_, row) => (
+      <View key={`row-${row}`} style={styles.row}>
+        {Array.from({ length: map.width }).map((_, col) => (
+          <Pressable
+            key={`tile-${row}-${col}`}
+            style={[
+              styles.tile,
+              {
+                width: tileSize,
+                height: tileSize,
+                backgroundColor: palette.tile,
+                borderColor: palette.grid,
+              },
+            ]}
+            disabled={!onTilePress}
+            onPress={() => onTilePress?.({ x: col, y: row })}
+          />
         ))}
       </View>
+    )), [map.width, map.height, tileSize, palette, onTilePress]);
 
-      {buildings.map((b) => {
-        const footprint = b.footprint ?? getFootprint(b.type);
-        const left = b.x * tileSize;
-        const top = b.y * tileSize;
-        const cost = getPlaceCost(b.type);
-        const color = buildingColors[b.type] ?? palettes[scheme].buildingTop;
-        const isSelected = selectedBuildingId === b.id;
-        return (
-          <React.Fragment key={b.id}>
-            <View
-              style={[
-                styles.buildingShadow,
-                {
-                  left,
-                  top: top + 6,
-                  width: footprint.width * tileSize,
-                  height: footprint.height * tileSize,
-                  backgroundColor: palette.buildingShadow,
-                  shadowColor: palette.shadow,
-                },
-              ]}
-            />
+  // Memoize building rendering - avoid re-rendering all buildings
+  const buildingElements = useMemo(() =>
+    buildings.map((b) => {
+      const footprint = b.footprint ?? getFootprint(b.type);
+      const left = b.x * tileSize;
+      const top = b.y * tileSize;
+      const cost = getPlaceCost(b.type);
+      const color = buildingColors[b.type] ?? palette.buildingTop;
+      const isSelected = selectedBuildingId === b.id;
+      return (
+        <React.Fragment key={b.id}>
+          <View
+            style={[
+              styles.buildingShadow,
+              {
+                left,
+                top: top + 6,
+                width: footprint.width * tileSize,
+                height: footprint.height * tileSize,
+                backgroundColor: palette.buildingShadow,
+                shadowColor: palette.shadow,
+              },
+            ]}
+          />
           <Pressable
             onPress={() => onBuildingPress?.(b.id)}
             style={[
@@ -137,17 +127,49 @@ export const TopDownMap: React.FC<Props> = ({
                 borderWidth: isSelected ? 2 : 1.2,
               },
             ]}>
-            <Text style={[styles.buildingLabel, { color: palette.buildingText }]}>{`${b.type.replace('_', ' ')} Lv${b.level}`}</Text>
+            <Text style={[styles.buildingLabel, { color: palette.buildingText }]}>
+              {`${b.type.replace('_', ' ')} Lv${b.level}`}
+            </Text>
             <View style={[styles.buildingMetaPill, { backgroundColor: palette.labelBg }]}>
-              <Text style={[styles.buildingMeta, { color: palette.buildingMeta }]}>{`G:${cost.gold ?? 0} W:${cost.wood ?? 0} S:${cost.stone ?? 0}`}</Text>
+              <Text style={[styles.buildingMeta, { color: palette.buildingMeta }]}>
+                {`G:${cost.gold ?? 0} W:${cost.wood ?? 0} S:${cost.stone ?? 0}`}
+              </Text>
             </View>
           </Pressable>
-          </React.Fragment>
-        );
-      })}
+        </React.Fragment>
+      );
+    }), [buildings, tileSize, palette, selectedBuildingId, onBuildingPress]);
+
+  return (
+    <View
+      style={[
+        styles.wrapper,
+        {
+          width: widthPx,
+          height: heightPx,
+          borderColor: palette.border,
+          backgroundColor: palette.surface,
+          shadowColor: palette.shadow,
+        },
+      ]}>
+      <View style={styles.grid}>
+        {tileGrid}
+      </View>
+      {buildingElements}
     </View>
   );
-};
+}, (prevProps, nextProps) => {
+  // Custom memo comparison - only re-render if these change
+  return (
+    prevProps.tileSize === nextProps.tileSize &&
+    prevProps.selectedBuildingId === nextProps.selectedBuildingId &&
+    prevProps.onTilePress === nextProps.onTilePress &&
+    prevProps.onBuildingPress === nextProps.onBuildingPress &&
+    prevProps.state.buildings.length === nextProps.state.buildings.length &&
+    prevProps.state.map.width === nextProps.state.map.width &&
+    prevProps.state.map.height === nextProps.state.map.height
+  );
+});
 
 const styles = StyleSheet.create({
   wrapper: {
